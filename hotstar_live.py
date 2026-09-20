@@ -21,7 +21,10 @@ import sys, os, re, json, time, hmac, hashlib, threading, uuid
 import subprocess
 from urllib.parse import urlparse, urljoin, quote, unquote, parse_qs
 
-# ── INSTALL DEPS ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# DEPENDENCY BOOTSTRAP
+# ---------------------------------------------------------------------------
+
 def _pip(*pkgs):
     subprocess.run([sys.executable, "-m", "pip", "install", *pkgs, "-q",
                     "--break-system-packages"], check=False)
@@ -32,15 +35,14 @@ except ImportError:
     _pip("flask")
     from flask import Flask, request, Response, jsonify
 
-# plain requests for BFF (hotstar.com — no TLS bot detection there, was working fine)
+# Plain requests for BFF (hotstar.com) — no TLS fingerprint check there
 try:
     import requests as req
 except ImportError:
     _pip("requests")
     import requests as req
 
-# curl_cffi for CDN only (live09p.hotstar.com = Akamai with TLS fingerprint check)
-# detect best supported impersonate target
+# curl_cffi for CDN (live09p.hotstar.com = Akamai with TLS fingerprint check)
 _cdn_session = None
 def _get_cdn_session():
     global _cdn_session
@@ -48,21 +50,18 @@ def _get_cdn_session():
         return _cdn_session
     try:
         from curl_cffi import requests as cffi_req
-        # discover supported targets from the installed version
         supported = []
         try:
             from curl_cffi.requests import BrowserType
             supported = [b.value for b in BrowserType]
         except Exception:
             pass
-        # prefer newest Chrome, fall back down
         preferred = ["chrome131","chrome130","chrome124","chrome120","chrome116","chrome110","chrome107","chrome104","chrome101","chrome100","chrome99"]
         target = next((t for t in preferred if t in supported), None)
         if not target and supported:
-            # just take whatever is there
             target = next((t for t in supported if "chrome" in t), supported[0])
         if not target:
-            target = "chrome110"  # last resort guess
+            target = "chrome110"
         s = cffi_req.Session(impersonate=target)
         _cdn_session = (s, target)
         print(f"[init] curl_cffi CDN session ready: impersonate={target}")
@@ -73,9 +72,9 @@ def _get_cdn_session():
     _cdn_session = (None, None)
     return None, None
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CONSTANTS  (from HAR analysis)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# CONSTANTS  (from HAR analysis)
+# ---------------------------------------------------------------------------
 
 _HMAC_KEY = b"\x05\xfc\x1a\x01\xca\xc9\x4b\xc4\x12\xfc\x53\x12\x07\x75\xf9\xee"
 
@@ -91,7 +90,7 @@ _CLIENT_CAPS = json.dumps({
     "ads":                  ["non_ssai"],
     "audio_channel":        ["stereo"],
     "container":            ["fmp4", "fmp4br", "ts"],
-    "dvr":                  ["short"],          # ← key for live HLS
+    "dvr":                  ["short"],          # required for live HLS
     "dynamic_range":        ["sdr"],
     "encryption":           ["widevine", "plain"],
     "ladder":               ["web", "tv", "phone"],
@@ -111,11 +110,11 @@ APP_DIR    = os.path.dirname(os.path.abspath(__file__))
 PORT       = 8080
 _CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  NGROK TUNNEL
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# NGROK TUNNEL
+# ---------------------------------------------------------------------------
 
-_ngrok_url   = None   # public URL once tunnel is up
+_ngrok_url   = None
 _ngrok_lock  = threading.Lock()
 
 def _ngrok_token_path():
@@ -177,9 +176,9 @@ def stop_ngrok():
     except Exception:
         pass
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  AUTH
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# AUTH
+# ---------------------------------------------------------------------------
 
 def load_token():
     """Read login token from hotstar_token.json (same file GUI saves)."""
@@ -251,15 +250,13 @@ def _make_hotstar_auth():
 
 _login_state = {}  # phone -> {guest_tok, ps, method}
 
-# ── exact copies of login helpers from jiohotstar-downloader ─────────────────
-
 def _find_jwt(data):
     src = data if isinstance(data, str) else (data.decode('utf-8','replace') if isinstance(data, bytes) else str(data))
     hits = [h for h in re.findall(r'eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+', src) if len(h) > 200]
     return max(hits, key=len) if hits else None
 
 def _dl_android_hdrs(token=None):
-    """Exact android_hdrs() from downloader — used only for login flow."""
+    """Android headers for login flow (matches jiohotstar-downloader exactly)."""
     h = {
         "User-Agent":          "Hotstar;in.startv.hotstar/26.09.05.0.11013 (Android/14)",
         "Content-Type":        "application/x-protobuf",
@@ -275,7 +272,7 @@ def _dl_android_hdrs(token=None):
     return h
 
 def _dl_web_hdrs(token=None, ps=None):
-    """Exact web_hdrs() from downloader — used only for login flow."""
+    """Web headers for login flow (matches jiohotstar-downloader exactly)."""
     h = {
         "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "Accept":        "application/json, text/plain, */*",
@@ -291,7 +288,7 @@ def _dl_web_hdrs(token=None, ps=None):
     return h
 
 def api_guest_token():
-    """Exact api_guest() from downloader — apix first, web BFF fallback."""
+    """Get guest token — tries apix (Android) first, falls back to web BFF."""
     try:
         r = req.post("https://apix.hotstar.com/v2/freshstart",
             params={"client_capabilities": json.dumps({"package":["dash","hls"],"container":["fmp4","ts"],
@@ -315,7 +312,7 @@ def api_guest_token():
     return None, None, None
 
 def api_send_otp(phone, guest, ps=None, method="web"):
-    """Exact api_send_otp() from downloader."""
+    """Send OTP via web BFF widget endpoint, falling back to Android protobuf API."""
     try:
         r = req.post(
             "https://www.hotstar.com/api/internal/bff/v2/pages/1/spaces/1/widgets/8",
@@ -341,7 +338,7 @@ def api_send_otp(phone, guest, ps=None, method="web"):
     return False, None
 
 def api_verify_otp(phone, otp, guest, ps=None, method="web"):
-    """Exact api_verify_otp() from downloader."""
+    """Verify OTP and return user JWT — token comes in x-hs-updatedusertoken header."""
     if method == "web":
         try:
             r = req.post(
@@ -383,10 +380,13 @@ def get_device_id_from_token(token):
         print(f"[auth] device_id parse error: {e}")
     return str(uuid.uuid4())[:23]
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PROXYSTATE  — loaded from hotstar_proxystate.json (save from browser HAR)
-#  HAR shows browser sends pre-stored proxystate; no /bff/v2/start call exists
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# PROXYSTATE
+# HAR shows the browser sends a pre-stored proxystate value on every BFF
+# request — there is no live /bff/v2/start call before each fetch.
+# We load it from hotstar_proxystate.json (saved from a browser HAR capture)
+# and refresh it when stale.
+# ---------------------------------------------------------------------------
 
 _proxystate     = {"value": None, "ud": None, "fetched_at": 0}
 _proxystate_lock = threading.Lock()
@@ -394,8 +394,8 @@ _proxystate_lock = threading.Lock()
 def load_proxystate_from_file():
     """
     Load proxystate from hotstar_proxystate.json.
-    This file stores the values extracted from x-hs-proxystate and x-hs-proxystate-ud
-    request headers in the browser HAR — the browser sends these pre-stored values.
+    The file should contain the x-hs-proxystate and x-hs-proxystate-ud
+    header values extracted from a browser HAR capture.
     """
     p = os.path.join(APP_DIR, "hotstar_proxystate.json")
     if not os.path.exists(p):
@@ -460,7 +460,6 @@ def _try_start_with(poster, token, referer, label):
         r = poster.post("https://www.hotstar.com/api/internal/bff/v2/start",
                         headers=hdrs, json=body, timeout=12)
         print(f"[auth] /start [{label}] status={r.status_code} resp-len={len(r.content)}")
-        # dump response headers to see what Hotstar returns
         ps_keys = [k for k in r.headers if "proxystate" in k.lower() or "proxy" in k.lower()]
         print(f"[auth] /start proxy headers: {ps_keys} | all headers: {dict(r.headers)}")
         ps = r.headers.get("x-hs-setproxystate") or r.headers.get("x-hs-proxystate")
@@ -472,7 +471,6 @@ def _try_start_with(poster, token, referer, label):
             return ps, ud
         else:
             print(f"[auth] /start [{label}] — no proxystate in response headers")
-            # save body for debug
             try:
                 debug_body = r.text[:500]
                 print(f"[auth] /start body preview: {debug_body!r}")
@@ -498,7 +496,7 @@ def get_proxystate(token, referer="https://www.hotstar.com/in"):
 
     print(f"[auth] fetching fresh proxystate...")
 
-    # try curl_cffi first — Chrome TLS fingerprint beats bot detection
+    # curl_cffi first — Chrome TLS fingerprint bypasses Akamai bot detection on BFF
     cdn_s, impersonate_target = _get_cdn_session()
     if cdn_s is not None:
         ps, ud = _try_start_with(cdn_s, token, referer, f"curl_cffi/{impersonate_target}")
@@ -506,7 +504,6 @@ def get_proxystate(token, referer="https://www.hotstar.com/in"):
             return ps, ud
         print("[auth] curl_cffi /start failed — trying plain requests")
 
-    # fallback: plain requests
     ps, ud = _try_start_with(req, token, referer, "requests")
     if ps:
         return ps, ud
@@ -515,18 +512,22 @@ def get_proxystate(token, referer="https://www.hotstar.com/in"):
     with _proxystate_lock:
         return _proxystate["value"], _proxystate["ud"]
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SLUG EXTRACTION  (from Hotstar URL)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# SLUG EXTRACTION  (from Hotstar URL)
+# ---------------------------------------------------------------------------
 
 def extract_slug(hotstar_url):
     """
-    HAR confirmed endpoint: /live/watch (NOT /video/live/watch)
+    Extract the BFF slug from a Hotstar URL.
+
+    HAR-confirmed endpoint is /live/watch (not /video/live/watch).
     From https://www.hotstar.com/in/shows/bbs10-24x7-stream-deferred/1271698292/live
     extracts in/shows/bbs10-24x7-stream-deferred/1271698292
+
+    Returns (slug, content_id) or (None, None).
     """
     hotstar_url = hotstar_url.strip()
-    # guard: if a full URL got embedded inside itself (paste bug), take the last clean URL
+    # If a full URL got embedded inside itself (paste bug), take the last clean URL
     if hotstar_url.count("hotstar.com") > 1:
         parts = re.findall(r'https://(?:www\.)?hotstar\.com/\S+', hotstar_url)
         if parts:
@@ -535,7 +536,6 @@ def extract_slug(hotstar_url):
     parsed = urlparse(hotstar_url if "://" in hotstar_url else "https://" + hotstar_url)
     path   = parsed.path.strip("/")
 
-    # strip all trailing path segments that are NOT part of the content slug
     for _ in range(5):
         path = re.sub(r'/(video/live/watch|live/watch|video/watch|video/live|live|watch)$', '', path)
 
@@ -547,9 +547,9 @@ def extract_slug(hotstar_url):
     print(f"[slug] {path}")
     return path, cid
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  BFF SLUG API  (main live stream URL fetcher)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# BFF SLUG API  (main live stream URL fetcher)
+# ---------------------------------------------------------------------------
 
 def _bff_headers(token, ps, ps_ud, slug, lang):
     # Full Chrome 137 header set — Akamai checks these for bot detection
@@ -587,7 +587,7 @@ def _bff_headers(token, ps, ps_ud, slug, lang):
 
 def _extract_m3u8(d, label=""):
     """Walk multiple known JSON paths + regex scan to find an m3u8 URL."""
-    # path 1: HAR path (sports live events)
+    # path 1: sports live events
     try:
         player = d["success"]["page"]["spaces"]["player"]
         ww     = player["widget_wrappers"][0]["widget"]["data"]["player_config"]
@@ -617,7 +617,7 @@ def _extract_m3u8(d, label=""):
     except (KeyError, TypeError):
         pass
 
-    # path 3: regex scan entire body — catches anything
+    # path 3: regex scan entire body — catches schema variations
     raw  = json.dumps(d)
     hits = re.findall(r'https://[^"\\]+\.m3u8[^"\\]*', raw)
     if hits:
@@ -632,7 +632,6 @@ def _do_bff_get(url, hdrs, params, label):
     Returns (response, used_curl_cffi) or (None, False).
     """
     cdn_s, target = _get_cdn_session()
-    # Try curl_cffi
     if cdn_s is not None:
         try:
             r = cdn_s.get(url, headers=hdrs, params=params, timeout=15)
@@ -640,7 +639,6 @@ def _do_bff_get(url, hdrs, params, label):
             return r, True
         except Exception as e:
             print(f"[bff] [{label}] curl_cffi error: {e}")
-    # Plain requests fallback
     try:
         r = req.get(url, headers=hdrs, params=params, timeout=15)
         print(f"[bff] [{label}] requests status={r.status_code} len={len(r.content)}")
@@ -692,10 +690,9 @@ def fetch_live_urls(slug, token, lang="eng"):
                 print(f"[bff] error {r.status_code} body: {r.text[:300]}")
                 continue
 
-            # check if we got HTML (no proxystate case)
+            # A HTML response means proxystate is missing or expired
             if r.text.lstrip().startswith("<!DOCTYPE") or r.text.lstrip().startswith("<html"):
                 print(f"[bff] got HTML response ({len(r.content)}b) — proxystate missing/expired, forcing refresh")
-                # force proxystate refresh by clearing cached time
                 with _proxystate_lock:
                     _proxystate["fetched_at"] = 0
                 ps, ps_ud = get_proxystate(token, referer=f"https://www.hotstar.com/{slug}")
@@ -719,9 +716,7 @@ def fetch_live_urls(slug, token, lang="eng"):
             if m3u8:
                 return m3u8
 
-            # dump top-level keys so we can trace where data is
             print(f"[bff] 200 but no m3u8 found. top keys: {list(d.keys())}")
-            # save full response for debugging
             debug_path = os.path.join(APP_DIR, "bff_debug.json")
             with open(debug_path, "w") as f:
                 json.dump(d, f, indent=2)
@@ -734,22 +729,22 @@ def fetch_live_urls(slug, token, lang="eng"):
 
     return None
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SESSION STORE  (active streams, keyed by share_id)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# SESSION STORE  (active streams, keyed by share_id)
+# ---------------------------------------------------------------------------
 
 _TOKEN     = load_token()
 _DEVICE_ID = get_device_id_from_token(_TOKEN) if _TOKEN else str(uuid.uuid4())[:23]
-load_proxystate_from_file()   # pre-load if available
+load_proxystate_from_file()
 _sessions  = {}   # share_id -> {slug, m3u8_url, base_url, created_at, title}
 _sess_lock = threading.Lock()
 
 def make_share_id():
     return uuid.uuid4().hex[:10]
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  FLASK APP
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# FLASK APP
+# ---------------------------------------------------------------------------
 
 app = Flask(__name__)
 
@@ -764,8 +759,6 @@ def watch(share_id):
     if not sess:
         return "link expired or invalid", 404
     return WATCH_HTML.replace("__SHARE_ID__", share_id).replace("__TITLE__", sess.get("title","Live Stream"))
-
-# ── API: create stream link ──────────────────────────────────────────────────
 
 @app.route("/api/create", methods=["POST"])
 def api_create():
@@ -782,7 +775,7 @@ def api_create():
     if not m3u8:
         return jsonify({"error": "could not get stream URL. check terminal for details."}), 400
 
-    # base URL for relative sub-playlists (strip filename)
+    # base URL for resolving relative sub-playlist names
     base_url = m3u8.rsplit("/", 1)[0] + "/"
 
     share_id = make_share_id()
@@ -806,13 +799,11 @@ def api_create():
     return jsonify({
         "share_id":    share_id,
         "watch_link":  local_link,
-        "public_link": public_link,          # None if no ngrok tunnel
+        "public_link": public_link,
         "m3u8_proxy":  f"http://localhost:{PORT}/proxy/{share_id}/master.m3u8",
         "expires_in":  "30 min (auto-refresh not yet implemented)",
         "ngrok_active": pub is not None,
     })
-
-# ── API: refresh stream (get fresh hdnea token) ──────────────────────────────
 
 @app.route("/api/refresh/<share_id>", methods=["POST"])
 def api_refresh(share_id):
@@ -833,13 +824,11 @@ def api_refresh(share_id):
 
     return jsonify({"status": "refreshed"})
 
-# ── CDN HEADERS  (Akamai media CDN — different sec-fetch-site than BFF) ──────
-
 def _cdn_headers():
     """
-    Exact headers from HAR for live09p.hotstar.com CDN requests.
-    KEY: sec-fetch-site=same-site (live09p.hotstar.com shares hotstar.com eTLD+1)
-         NOT cross-site — Akamai flags that as bot instantly.
+    Headers for live09p.hotstar.com CDN requests (from HAR).
+    sec-fetch-site must be same-site (live09p shares the hotstar.com eTLD+1) —
+    cross-site triggers Akamai bot detection immediately.
     """
     return {
         "accept":             "*/*",
@@ -858,8 +847,6 @@ def _cdn_headers():
         "sec-fetch-site":     "same-site",    # HAR confirmed — shares hotstar.com eTLD+1
         "user-agent":         _CHROME_UA,
     }
-
-# ── PROXY: master playlist (adds hdnea, rewrites sub-playlist URLs) ───────────
 
 @app.route("/proxy/<share_id>/master.m3u8")
 def proxy_master(share_id):
@@ -906,8 +893,6 @@ def proxy_master(share_id):
     except Exception as e:
         return str(e), 502
 
-# ── PROXY: sub-playlist (relative path) — rewrites segment URLs through Flask ─
-
 @app.route("/proxy/<share_id>/sub/<path:filename>")
 def proxy_sub(share_id, filename):
     with _sess_lock:
@@ -918,28 +903,27 @@ def proxy_sub(share_id, filename):
     sub_url = urljoin(sess["base_url"], filename)
     return _stream_playlist(sub_url, share_id)
 
-# ── PROXY: segment (.ts) — browser can't hit CDN directly (CORS) ─────────────
-
 @app.route("/proxy/<share_id>/seg/<path:filename>")
 def proxy_seg(share_id, filename):
+    """
+    Proxy .ts segments through Flask — browsers can't hit CDN directly due to CORS.
+
+    filename carries the full CDN path (leading slash stripped).
+    urljoin would double the path against base_url, so we reconstruct from CDN root.
+    Flask strips the query string from <path:filename>, so re-attach from request.
+    """
     with _sess_lock:
         sess = _sessions.get(share_id)
     if not sess:
         return "session expired", 404
 
-    # filename = "mp2/path/to/seg.ts"  (full CDN path, leading slash stripped)
-    # base_url = "https://live09p.hotstar.com/mp2/path/to/"
-    # urljoin would DOUBLE the path — must use CDN root + /filename instead
     pu = urlparse(sess["base_url"])
     cdn_root = f"{pu.scheme}://{pu.netloc}"
     seg_url = f"{cdn_root}/{filename}"
-    # query string (?m=...) is NOT in filename — Flask strips it; re-attach from request
     qs = request.query_string.decode("utf-8")
     if qs:
         seg_url += "?" + qs
     return _stream_from(seg_url)
-
-# ── PROXY: absolute URL (encoded) ────────────────────────────────────────────
 
 @app.route("/proxy/<share_id>/abs/<path:encoded>")
 def proxy_abs(share_id, encoded):
@@ -949,7 +933,7 @@ def proxy_abs(share_id, encoded):
     return _stream_from(url)
 
 def _m3u8_headers():
-    """Headers for m3u8 text fetches — no gzip so r.text is clean."""
+    """CDN headers for m3u8 text fetches — identity encoding keeps r.text clean."""
     h = _cdn_headers().copy()
     h["accept-encoding"] = "identity"
     return h
@@ -957,8 +941,7 @@ def _m3u8_headers():
 def _stream_playlist(upstream_url, share_id):
     """
     Fetch a sub-playlist and rewrite .ts segment URLs to go through
-    /proxy/{share_id}/seg/... so the browser never hits CDN directly.
-    (Direct CDN fetch from localhost page = CORS block.)
+    /proxy/{share_id}/seg/... so the browser never hits CDN directly (CORS block).
     """
     try:
         cdn_s, _ = _get_cdn_session()
@@ -975,12 +958,10 @@ def _stream_playlist(upstream_url, share_id):
         for line in text.splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
-                # build absolute CDN URL, then route it through our proxy
                 if stripped.startswith("http"):
                     abs_url = stripped
                 else:
                     abs_url = urljoin(base, stripped)
-                # encode as proxy seg path: /proxy/{id}/seg/<path>?<query>
                 from urllib.parse import urlparse as _up, urlencode, parse_qs
                 pu = _up(abs_url)
                 seg_path = pu.path.lstrip("/")
@@ -1000,9 +981,13 @@ def _stream_playlist(upstream_url, share_id):
         return str(e), 502
 
 def _seg_headers():
-    """Headers for .ts segment fetches — identity encoding so we get raw MPEG-TS bytes."""
+    """
+    Headers for .ts segment fetches.
+    identity encoding is required — gzip/br would corrupt the MPEG-TS bytes
+    that the browser media decoder reads directly.
+    """
     h = _cdn_headers().copy()
-    h["accept-encoding"] = "identity"   # CRITICAL: no gzip/br — browser media decoder needs raw bytes
+    h["accept-encoding"] = "identity"
     return h
 
 def _stream_from(upstream_url):
@@ -1029,8 +1014,6 @@ def _stream_from(upstream_url):
         print(f"[cdn] stream error: {e}")
         return str(e), 502
 
-# ── API: ngrok token set + status ────────────────────────────────────────────
-
 @app.route("/api/ngrok/status")
 def api_ngrok_status():
     with _ngrok_lock:
@@ -1049,7 +1032,6 @@ def api_ngrok_set_token():
     if not token:
         return jsonify({"error": "token is empty"}), 400
     _save_ngrok_token(token)
-    # try to start tunnel now
     url = start_ngrok(PORT)
     if url:
         return jsonify({"status": "tunnel started", "public_url": url})
@@ -1119,8 +1101,6 @@ def api_login_use_existing():
     _DEVICE_ID = get_device_id_from_token(tok)
     return jsonify({"status": "loaded", "remaining": tok_remaining(tok)})
 
-# ── API: list active sessions ─────────────────────────────────────────────────
-
 @app.route("/api/sessions")
 def api_sessions():
     now = time.time()
@@ -1136,9 +1116,9 @@ def api_sessions():
             })
     return jsonify(out)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  HTML — HOST PAGE (you use this to create links)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# HTML — HOST PAGE (you use this to create links)
+# ---------------------------------------------------------------------------
 
 HOST_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -1325,7 +1305,7 @@ button.btn-primary:disabled{opacity:.4;cursor:not-allowed}
 <script>
 let lastShareId = null;
 
-// ── TAB SWITCH ──
+// --- tab switching ---
 function switchTab(t) {
   ['login','stream'].forEach(n => {
     document.getElementById('tab-'+n).classList.toggle('active', n===t);
@@ -1334,7 +1314,6 @@ function switchTab(t) {
   if (t==='stream') loadSessions();
 }
 
-// ── LOG ──
 function log(msg, cls='', el='log') {
   const e = document.getElementById(el);
   const d = document.createElement('div');
@@ -1344,7 +1323,6 @@ function log(msg, cls='', el='log') {
   e.scrollTop = e.scrollHeight;
 }
 
-// ── TOKEN STATUS ──
 async function loadTokenStatus() {
   try {
     const r = await fetch('/api/token/status');
@@ -1385,7 +1363,6 @@ async function useExistingToken() {
   } catch(e) { log(e.message, 'err', 'loginLog'); }
 }
 
-// ── OTP LOGIN ──
 async function sendOtp() {
   const phone = document.getElementById('phoneInput').value.trim();
   if (!phone) { log('enter phone number', 'err', 'loginLog'); return; }
@@ -1427,7 +1404,6 @@ async function verifyOtp() {
   finally { document.getElementById('btnVerify').disabled = false; }
 }
 
-// ── CREATE LINK ──
 async function createLink() {
   const url  = document.getElementById('urlInput').value.trim();
   const lang = document.getElementById('langSel').value;
@@ -1470,7 +1446,6 @@ function copyLink(elId) {
     .then(()=> log('copied', 'ok'));
 }
 
-// ── NGROK ──
 async function loadNgrokStatus() {
   try {
     const r = await fetch('/api/ngrok/status');
@@ -1540,9 +1515,9 @@ fetch('/api/token/status').then(r=>r.json()).then(d=>{
 </body>
 </html>"""
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  HTML — WATCH PAGE (family opens this)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# HTML — WATCH PAGE (family opens this)
+# ---------------------------------------------------------------------------
 
 WATCH_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -1555,21 +1530,21 @@ WATCH_HTML = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0d0d0d;display:flex;flex-direction:column;align-items:center;min-height:100vh;font-family:system-ui,sans-serif}
 
-/* ── top bar ── */
+/* top bar */
 #topbar{width:100%;max-width:1280px;display:flex;align-items:center;gap:10px;padding:10px 14px}
 #title-text{color:#e6edf3;font-size:.95rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #live-badge{background:#e53935;color:#fff;font-size:.65rem;font-weight:700;padding:2px 7px;border-radius:3px;letter-spacing:.05em;display:none}
 #kbps-info{color:#8b949e;font-size:.72rem;font-family:monospace}
 
-/* ── video wrap ── */
+/* video wrap */
 #wrap{position:relative;width:100%;max-width:1280px;background:#000;border-radius:6px;overflow:hidden;cursor:pointer}
 video{width:100%;display:block;background:#000}
 
-/* ── custom controls bar ── */
+/* custom controls bar */
 #ctrl{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.82));padding:6px 12px 10px;display:flex;flex-direction:column;gap:6px;opacity:0;transition:opacity .25s;user-select:none}
 #wrap:hover #ctrl,#wrap.show-ctrl #ctrl{opacity:1}
 
-/* progress bar (live = just decorative scrubber) */
+/* progress bar (live = decorative scrubber over DVR window) */
 #prog-row{display:flex;align-items:center;gap:8px}
 #prog{flex:1;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:rgba(255,255,255,.25);outline:none;cursor:pointer}
 #prog::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:#e53935;cursor:pointer}
@@ -1604,7 +1579,7 @@ video{width:100%;display:block;background:#000}
 
 <div id="topbar">
   <span id="title-text">__TITLE__</span>
-  <span id="live-badge">● LIVE</span>
+  <span id="live-badge">&#9679; LIVE</span>
   <span id="kbps-info"></span>
 </div>
 
@@ -1635,7 +1610,7 @@ video{width:100%;display:block;background:#000}
 
       <!-- quality picker -->
       <div id="qual-wrap">
-        <button id="qual-btn">Auto ▾</button>
+        <button id="qual-btn">Auto &#9660;</button>
         <div id="qual-menu"></div>
       </div>
 
@@ -1647,7 +1622,7 @@ video{width:100%;display:block;background:#000}
   </div>
 </div>
 
-<div id="status">connecting…</div>
+<div id="status">connecting&#8230;</div>
 
 <script>
 const video   = document.getElementById('v');
@@ -1671,7 +1646,6 @@ const src     = '/proxy/__SHARE_ID__/master.m3u8';
 let hls = null;
 let isLive = true;
 
-/* ── SVG icon strings ── */
 const ICONS = {
   play:'<path d="M8 5v14l11-7z"/>',
   pause:'<path d="M6 19h4V5H6zm8-14v14h4V5z"/>',
@@ -1682,12 +1656,10 @@ const ICONS = {
 };
 function setIcon(el, key){ el.innerHTML = ICONS[key]; }
 
-/* ── play/pause ── */
 ppBtn.addEventListener('click', ()=>{ video.paused ? video.play() : video.pause(); });
 video.addEventListener('play',  ()=>{ setIcon(ppIcon,'pause'); });
 video.addEventListener('pause', ()=>{ setIcon(ppIcon,'play'); });
 
-/* ── volume ── */
 volSlider.addEventListener('input', ()=>{
   video.volume = volSlider.value / 100;
   video.muted = (volSlider.value == 0);
@@ -1703,7 +1675,7 @@ function syncMuteIcon(){
   if (!video.muted) volSlider.value = Math.round(video.volume * 100);
 }
 
-/* ── progress bar (live seeks back in DVR window) ── */
+/* progress bar seeks within DVR window */
 video.addEventListener('timeupdate', ()=>{
   if (!isLive || video.duration === Infinity) {
     timeTxt.textContent = 'LIVE';
@@ -1721,7 +1693,6 @@ prog.addEventListener('input', ()=>{
   }
 });
 
-/* ── fullscreen ── */
 fsBtn.addEventListener('click', ()=>{
   if (!document.fullscreenElement) {
     wrap.requestFullscreen().catch(()=>{});
@@ -1734,24 +1705,19 @@ fsBtn.addEventListener('click', ()=>{
 document.addEventListener('fullscreenchange', ()=>{
   setIcon(fsIcon, document.fullscreenElement ? 'fsOut' : 'fsIn');
 });
-/* double-click wrap = fullscreen */
 wrap.addEventListener('dblclick', ()=>{ fsBtn.click(); });
-/* single click = play/pause (not on controls) */
 wrap.addEventListener('click', e=>{
   if (e.target.closest('#ctrl')) return;
   ppBtn.click();
 });
 
-/* ── quality menu ── */
 function buildQualMenu(levels, currentLevel){
   qualMenu.innerHTML = '';
-  // Auto
   const auto = document.createElement('div');
   auto.className = 'q-item' + (currentLevel === -1 ? ' active' : '');
   auto.textContent = 'Auto';
   auto.dataset.lvl = '-1';
   qualMenu.appendChild(auto);
-  // each level
   levels.forEach((lvl, i)=>{
     const el = document.createElement('div');
     el.className = 'q-item' + (currentLevel === i ? ' active' : '');
@@ -1764,7 +1730,7 @@ function buildQualMenu(levels, currentLevel){
     item.addEventListener('click', ()=>{
       const lvl = parseInt(item.dataset.lvl);
       hls.currentLevel = lvl;
-      qualBtn.textContent = (lvl === -1 ? 'Auto' : item.textContent) + ' ▾';
+      qualBtn.textContent = (lvl === -1 ? 'Auto' : item.textContent) + ' \u25be';
       qualMenu.querySelectorAll('.q-item').forEach(x=>x.classList.remove('active'));
       item.classList.add('active');
       qualMenu.classList.remove('open');
@@ -1774,7 +1740,6 @@ function buildQualMenu(levels, currentLevel){
 qualBtn.addEventListener('click', e=>{ e.stopPropagation(); qualMenu.classList.toggle('open'); });
 document.addEventListener('click', ()=> qualMenu.classList.remove('open'));
 
-/* ── HLS init ── */
 function setStatus(msg){ status.textContent = msg; }
 
 if (Hls.isSupported()) {
@@ -1803,16 +1768,15 @@ if (Hls.isSupported()) {
       setStatus('');
     }
     buildQualMenu(hls.levels, data.level);
-    // update qual btn if auto chose a level
     if (hls.autoLevelEnabled) {
       const lvl = hls.levels[data.level];
-      qualBtn.textContent = 'Auto (' + (lvl ? lvl.height+'p' : data.level) + ') ▾';
+      qualBtn.textContent = 'Auto (' + (lvl ? lvl.height+'p' : data.level) + ') \u25be';
     }
   });
 
   hls.on(Hls.Events.ERROR, (e, data)=>{
     if (data.fatal) {
-      setStatus('⚠ ' + data.type + ' — ' + data.details);
+      setStatus('\u26a0 ' + data.type + ' \u2014 ' + data.details);
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
         setTimeout(()=> hls.startLoad(), 2000);
       } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
@@ -1833,24 +1797,22 @@ if (Hls.isSupported()) {
 </body>
 </html>"""
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import socket
     import webbrowser
     import atexit
 
-    # get local IP for LAN links
     try:
         local_ip = socket.gethostbyname(socket.gethostname())
     except Exception:
         local_ip = "localhost"
 
-    # auto-start ngrok in background thread (non-blocking)
     def _ngrok_startup():
-        time.sleep(0.8)   # let Flask start first
+        time.sleep(0.8)  # let Flask bind before attempting tunnel
         url = start_ngrok(PORT)
         if url:
             print(f"\n  [ngrok] friends link: {url}/watch/<id>  (after you create a link)\n")
@@ -1862,10 +1824,10 @@ if __name__ == "__main__":
 
     print(f"""
   Hotstar Live Relay  v3
-  ──────────────────────
+  ----------------------
   you:     http://localhost:{PORT}
   LAN:     http://{local_ip}:{PORT}/watch/<id>  (after you create a link)
-  friends: set ngrok token in the web UI → get a public link
+  friends: set ngrok token in the web UI -> get a public link
   Ctrl+C to stop
 """)
     threading.Thread(target=lambda: (time.sleep(1.5), webbrowser.open(f"http://localhost:{PORT}")), daemon=True).start()
