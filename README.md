@@ -251,7 +251,7 @@ Yes. Run `python hotstar_live.py` on any Linux VPS with Python 3.8+. Skip ngrok 
 
 ## Related
 
-- **[jiohotstar-downloader](https://github.com/arvind88765/jiohotstar-downloader)** — GUI app for downloading JioHotstar VOD content with Widevine DRM support, multi-language audio tracks, and subtitle extraction. Shares login tokens with this relay.
+- **[jiohotstar-downloader](https://github.com/arvind88765/jiohotstar-downloader)** ---- GUI app for downloading JioHotstar VOD content with Widevine DRM support, multi-language audio tracks, and subtitle extraction. Shares login tokens with this relay.
 
 ---
 
