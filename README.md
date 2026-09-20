@@ -41,6 +41,12 @@ Your machine only proxies the tiny playlist files (a few KB every 2 seconds). Al
 
 ## How It Works
 
+
+
+https://github.com/user-attachments/assets/1f7ef530-2ffc-4ecc-88a9-4cf24fb10e45
+
+
+
 ### System Architecture
 
 ```mermaid
