@@ -2,7 +2,7 @@
 
 <img src="https://placehold.co/72x72/0d1117/e6edf3?text=📡" width="72" />
 
-# hotstar-stream-proxy
+# Jiohotstar-stream-proxy
 
 **A self-hosted Python relay that converts any JioHotstar live stream URL into a shareable browser link.**
 No app install. No subscription check. No geo-block for your friends.
